@@ -95,6 +95,7 @@ The Logical Physical Layer is the digital, protocol-aware part of the Physical L
 - Decisions about rate, power state, electrical idle, polarity, and loopback
 
 It does not directly drive the differential PCIe pins.
+<img width="1280" height="813" alt="image" src="https://github.com/user-attachments/assets/00c4c9eb-0e02-4f6b-97f8-dd7cc3c9c8f1" />
 
 ### 1.4 PHY PCS and PMA
 
@@ -314,6 +315,30 @@ Suppose the scrambler produces `0xA7` and `0x4C` for the two data characters. Th
 The PHY then applies 8b/10b encoding to each character and serializes the resulting 10-bit symbols.
 
 On reception, the PHY decodes the 10-bit symbols and returns `0xA7` and `0x4C` through `RxData`. The controller-side descrambler reconstructs `0x12` and `0x34`.
+
+## PCIe 8b/10b Encoding and Scrambling
+
+In PCIe Gen1/Gen2, 8b/10b encoding is applied to both data characters (D-codes) and control characters (K-codes), whereas scrambling is generally applied only to data characters.
+
+### Transmit Path
+
+| Character                  | Scrambling     | 8b/10b Encoding |
+| -------------------------- | -------------- | --------------- |
+| Data character (D-code)    | Yes, generally | Yes             |
+| Control character (K-code) | No             | Yes             |
+
+```text
+Data:     8-bit data → Scrambler → 8b/10b encoder → Serial link
+Control:  K-character ──────────→ 8b/10b encoder → Serial link
+```
+
+### Important Exception
+
+Not every D-character is scrambled. Data characters in certain sequences, such as **TS1/TS2 Ordered Sets** and the **Compliance Pattern**, are transmitted without scrambling.
+
+Control characters remain unscrambled so that symbols such as `COM`, `STP`, `SDP`, and `END` can be reliably recognized.
+
+**Reference:** [PCI Express Base Specification 2.0](https://archive.org/download/os-dev-manuals/pcie%20spec%20rev%202.0.pdf)
 
 ---
 
