@@ -576,3 +576,20 @@ loopback_mode = 1 -> condition fails
 ```
 
 ---
+
+```mermaid
+stateDiagram-v2
+
+    [*] --> ST_RESET
+
+    ST_RESET --> ST_RESET : PHY Initialization
+    ST_RESET --> ST_IDLE : PhyStatus = 0
+
+    ST_IDLE --> ST_WAIT : start_power_operation
+
+    ST_WAIT --> ST_IDLE : PhyStatus = 1
+    ST_WAIT --> ST_WAIT : Waiting for PHY
+
+    ST_WAIT --> ST_FAULT : Timeout
+
+    ST_FAULT --> ST_FAULT : Reset required
