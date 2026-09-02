@@ -2,7 +2,6 @@
 
 ## 1. Purpose
 
-
 ```text
 PCIe LTSSM
     decides the link-level state transition
@@ -35,12 +34,12 @@ localparam [1:0] P2  = 2'b11;
 
 Conceptually:
 
-| PIPE state | Meaning |
-|---|---|
-| P0 | PHY fully operational |
-| P0s | Light PHY power-saving state |
-| P1 | Deeper PHY power-saving state |
-| P2 | Deeper power state; unsupported by this wrapper |
+| PIPE state | Meaning                                         |
+| ---------- | ----------------------------------------------- |
+| P0         | PHY fully operational                           |
+| P0s        | Light PHY power-saving state                    |
+| P1         | Deeper PHY power-saving state                   |
+| P2         | Deeper power state; unsupported by this wrapper |
 
 ---
 
@@ -132,7 +131,7 @@ P1  = branch from P0
 P2  = branch from P0
 ```
 
-## 7. Why P0s -> P1 Is Not a Direct Jump
+## 5. Why P0s -> P1 Is Not a Direct Jump
 
 Assume:
 
@@ -187,7 +186,7 @@ P0s -> P0 -> P1
 
 ---
 
-## 8. Why P1 -> P0s Is Not a Direct Jump
+## 6. Why P1 -> P0s Is Not a Direct Jump
 
 The same principle applies in the reverse direction.
 
@@ -237,11 +236,11 @@ waits for completion, and later requests:
 P0 -> P0s
 ```
 
-## 10. Legal Transition vs Allowed-Right-Now
+## 7. Legal Transition vs Allowed-Right-Now
 
 These are two different concepts.
 
-### 10.1 Legal transition
+### 7.1 Legal transition
 
 This asks:
 
@@ -261,7 +260,7 @@ P1 -> P0      LEGAL
 P0s -> P0     LEGAL
 ```
 
-### 10.2 Allowed right now
+### 7.2 Allowed right now
 
 This asks:
 
@@ -296,7 +295,7 @@ legal transition != immediately executable transition
 
 ---
 
-## 11. Wrapper Legal-Transition Function
+## 8. Wrapper Legal-Transition Function
 
 The current wrapper implements:
 
@@ -337,22 +336,22 @@ endfunction
 
 So the implemented wrapper transition table is:
 
-| Current | Requested | Result |
-|---|---|---|
-| P0 | P0s | Legal |
-| P0 | P1 | Legal |
-| P0s | P0 | Legal |
-| P1 | P0 | Legal |
-| P0s | P1 | Illegal |
-| P1 | P0s | Illegal |
-| Any supported state | P2 | Illegal in this wrapper |
-| P2 | Any state | Illegal in this wrapper |
+| Current             | Requested | Result                  |
+| ------------------- | --------- | ----------------------- |
+| P0                  | P0s       | Legal                   |
+| P0                  | P1        | Legal                   |
+| P0s                 | P0        | Legal                   |
+| P1                  | P0        | Legal                   |
+| P0s                 | P1        | Illegal                 |
+| P1                  | P0s       | Illegal                 |
+| Any supported state | P2        | Illegal in this wrapper |
+| P2                  | Any state | Illegal in this wrapper |
 
 ---
 
-## 17. Example: P0s -> P1 Correct Sequence
+## 9. Example: P0s -> P1 Correct Sequence
 
-### Step 1
+### 9.1 Step 1
 
 Current PHY state:
 
@@ -374,7 +373,7 @@ P0s -> P0
 
 This is legal.
 
-### Step 2
+### 9.2 Step 2
 
 Wrapper drives:
 
@@ -394,11 +393,11 @@ Wrapper returns:
 power_done = 1
 ```
 
-### Step 3
+### 9.3 Step 3
 
 The LTSSM/MAC performs whatever higher-level link sequencing is required before entering the next low-power condition.
 
-### Step 4
+### 9.4 Step 4
 
 MAC ensures TX is electrically idle and requests:
 
@@ -406,7 +405,7 @@ MAC ensures TX is electrically idle and requests:
 mac_powerdown = P1
 ```
 
-### Step 5
+### 9.5 Step 5
 
 Wrapper performs:
 
@@ -424,7 +423,7 @@ P0s -> P0 -> P1
 
 ---
 
-## 18. Example: P1 -> P0s Correct Sequence
+## 10. Example: P1 -> P0s Correct Sequence
 
 The same rule applies:
 
@@ -456,9 +455,9 @@ P0s
 
 ---
 
-## 5. Electrical-Idle Requirement
+## 11. Electrical-Idle Requirement
 
-### 5.1 Entering P0s or P1
+### 11.1 Entering P0s or P1
 
 Before the wrapper accepts a transition from P0 into a low-power state, the transmitter shall already be in electrical idle.
 
@@ -490,7 +489,7 @@ Required sequence:
 
 If `mac_powerdown` requests P0s or P1 while `TxElecIdle == 0`, the request shall be blocked.
 
-### 5.2 Returning to P0
+### 11.2 Returning to P0
 
 A transition to P0 does not require `TxElecIdle` to be asserted as an explicit launch prerequisite.
 
@@ -498,7 +497,7 @@ The wrapper shall keep the transmitter idle while the PHY is in a non-P0 state o
 
 ---
 
-## 6. Loopback Restriction
+## 12. Loopback Restriction
 
 Power-state changes shall not be started while loopback mode is active.
 
@@ -526,7 +525,7 @@ The MAC shall disable loopback before requesting a power-state change.
 
 ---
 
-## 7. Power-Change Qualification Rule
+## 13. Power-Change Qualification Rule
 
 A power-state change is allowed only when all required conditions are true.
 
@@ -539,7 +538,7 @@ assign power_change_allowed =
 
 This expression has three independent requirements.
 
-### 7.1 Legal Transition
+### 13.1 Legal Transition
 
 ```verilog
 legal_power_transition(PowerDown, mac_powerdown)
@@ -547,7 +546,7 @@ legal_power_transition(PowerDown, mac_powerdown)
 
 The requested current-state-to-target-state transition shall be supported by the wrapper.
 
-### 7.2 Electrical Idle
+### 13.2 Electrical Idle
 
 ```verilog
 (mac_powerdown == P0) || TxElecIdle
@@ -563,7 +562,7 @@ Target = P0s or P1:
     TxElecIdle must be 1.
 ```
 
-### 7.3 Loopback Disabled
+### 13.3 Loopback Disabled
 
 ```verilog
 !loopback_mode
@@ -577,4 +576,3 @@ loopback_mode = 1 -> condition fails
 ```
 
 ---
-
