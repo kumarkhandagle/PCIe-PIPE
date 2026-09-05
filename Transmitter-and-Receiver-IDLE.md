@@ -1227,3 +1227,163 @@ This chapter is written as an implementation-oriented teaching reference for a G
 - The PCI Express Base Specification for exact LTSSM `Recovery.Speed` entry/exit criteria, Electrical Idle inference rules, and protocol timing.
 
 For implementation, always use the PIPE revision and PCIe Base Specification revision applicable to the selected PHY/IP.
+
+
+```verilog
+/*
+ST_RESET  -> phy_ready = 0
+ST_IDLE   -> phy_ready = 1
+ST_WAIT   -> phy_ready = 1
+ST_FAULT  -> phy_ready = 0
+*/
+
+
+assign phy_ready = (state == ST_IDLE) || (state == ST_WAIT);
+
+
+// ========================================================================
+// Transmit electrical-idle control
+// ========================================================================
+// force_tx_idle - wrapper itself requires TX Electrical Idle, even if the MAC did not explicitly request it.
+// effective_tx_idle - Final decision used to drive TxElecIdle
+// state == ST_WAIT - the wrapper is waiting for some PHY operation such as a rate change, power-state change, 
+// or receiver detection to complete. During that time, normal transmission is suppressed.
+// starting_operation: it predicts the FSM transition one cycle early enough 
+// for other registered outputs to react on the same edge.
+
+wire force_tx_idle;
+wire effective_tx_idle;
+
+assign force_tx_idle =
+    !phy_ready ||
+    (PowerDown != P0) ||
+    (state == ST_WAIT) ||
+    starting_operation;
+
+assign effective_tx_idle =
+    mac_tx_elecidle ||
+    force_tx_idle;
+
+
+// ========================================================================
+// TX datapath
+// ========================================================================
+
+always @(posedge pclk or negedge reset_n) begin
+
+    if (!reset_n) begin
+
+        TxData       <= 8'h00;
+        TxDataK      <= 1'b0;
+        TxElecIdle   <= 1'b1;
+        TxCompliance <= 1'b0;
+
+    end else begin
+
+        TxElecIdle <= effective_tx_idle;
+
+        // TxCompliance is valid only when actively transmitting in P0.
+        /* TxCompliance is used for PCIe compliance testing, not normal packet transmission.
+           Its main purpose is to support the LTSSM Polling.Compliance substate, 
+           where the transmitter sends a special compliance pattern so lab equipment can measure
+           whether the PCIe transmitter meets electrical requirements 
+           such as voltage, timing, jitter, and signal quality. */
+        TxCompliance <=
+            mac_tx_compliance &&
+            (PowerDown == P0) &&
+            !effective_tx_idle;
+
+        // The PHY ignores TxData and TxDataK during electrical idle.
+        if (effective_tx_idle) begin
+
+            TxData  <= 8'h00;
+            TxDataK <= 1'b0;
+
+        end else begin
+
+            TxData  <= mac_tx_data;
+            TxDataK <= mac_tx_datak;
+
+        end
+    end
+end
+
+
+
+
+
+
+
+
+// ========================================================================
+// RxElecIdle synchronization and filtering
+// ========================================================================
+
+reg       rx_ei_meta;
+reg       rx_ei_sync;
+reg [7:0] rx_ei_counter;
+
+
+always @(posedge pclk or negedge reset_n) begin
+
+    if (!reset_n) begin
+
+        rx_ei_meta      <= 1'b1;
+        rx_ei_sync      <= 1'b1;
+        rx_ei_counter   <= 8'd0;
+        mac_rx_elecidle <= 1'b1;
+
+    end else begin
+
+        // Two-stage synchronization.
+        rx_ei_meta <= RxElecIdle;
+        rx_ei_sync <= rx_ei_meta;
+
+        // No change is waiting to be accepted.
+        if (rx_ei_sync == mac_rx_elecidle) begin
+
+            rx_ei_counter <= 8'd0;
+
+        end
+        
+                /*
+                              short pulse
+                         ___
+            rx_ei_sync _|   |________
+            
+            counter      1 2 3 0
+            
+            mac_rx_elecidle
+                         __________________
+                         no change
+             
+             */
+        else if (RX_EI_FILTER_CYCLES == 0) begin
+
+            mac_rx_elecidle <= rx_ei_sync;
+            rx_ei_counter   <= 8'd0;
+
+        end
+
+        // New value remained stable for the configured duration.
+        else if (
+            rx_ei_counter >=
+            (RX_EI_FILTER_CYCLES - 1)
+        ) begin
+
+            mac_rx_elecidle <= rx_ei_sync;
+            rx_ei_counter   <= 8'd0;
+
+        end
+
+        // Continue counting stable samples.
+        else begin
+
+            rx_ei_counter <=
+                rx_ei_counter + 8'd1;
+
+        end
+    end
+end
+
+```
