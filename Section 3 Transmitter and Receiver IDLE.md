@@ -1,15 +1,18 @@
-# PCIe PIPE Electrical Idle: TxElecIdle, RxElecIdle, and Recovery.Speed
+# PCIe PIPE Electrical Idle: `TxElecIdle`, `RxElecIdle`, EIOS, and `Recovery.Speed`
 
+PCI Express uses Electrical Idle as part of several physical-layer and Link Training and Status State Machine (LTSSM) operations. In a PIPE-based implementation, Electrical Idle must be understood from two independent directions: the condition commanded on the local transmitter and the condition observed on the local receiver.
 
-> **TxElecIdle controls the local transmit direction. RxElecIdle reports the electrical condition of the local receive direction.**
+The principal PIPE signals associated with these functions are `TxElecIdle` and `RxElecIdle`. Although their names are similar, they serve fundamentally different purposes. `TxElecIdle` is a MAC-to-PHY control that commands the local transmitter into Electrical Idle, whereas `RxElecIdle` is a PHY-to-MAC status indication describing the electrical condition detected on the incoming receive lane.
 
-PCIe is full-duplex, so the two directions are independent.
+This distinction becomes particularly important during LTSSM operations such as `Recovery.Speed`, where both link partners intentionally stop transmission at the current signaling rate before changing to another rate.
 
----
+This chapter describes these mechanisms from an implementation-oriented perspective for a Gen1/Gen2-style PIPE interface. Exact LTSSM entry conditions, exit conditions, timers, and Electrical Idle inference rules remain dependent on the applicable PCIe Base Specification and PIPE revision. 
 
-## 1. The Two Directions of a PCIe Link
+## Full-Duplex Nature of the PCIe Link
 
-Consider two PCIe devices, Device A and Device B.
+A PCIe link is full-duplex. Each device simultaneously owns one transmit direction and one receive direction.
+
+Consider two devices, Device A and Device B:
 
 ```text
 Device A                                      Device B
@@ -19,7 +22,7 @@ TX_A  ------------------------------------->  RX_B
 RX_A  <-------------------------------------  TX_B
 ```
 
-There are therefore two independent electrical paths:
+The two electrical paths are independent:
 
 ```text
 A -> B
@@ -27,30 +30,36 @@ A -> B
 B -> A
 ```
 
-<img width="1232" height="355" alt="image" src="https://github.com/user-attachments/assets/e09fbd83-eba8-4c1b-8e53-e8f2ae86d155" />
+Device A can therefore stop transmitting toward Device B while Device B continues transmitting toward Device A.
 
-
-Device A can stop transmitting while Device B is still transmitting.
-
-Therefore, Device A needs two different pieces of information:
+This independence requires Device A to maintain two distinct pieces of Electrical Idle information:
 
 ```text
 TxElecIdle_A
-    "What am I asking my own transmitter to do?"
+    Controls the electrical state of A's transmitter.
 
 RxElecIdle_A
-    "What electrical condition do I see on the signal coming from B?"
+    Reports the electrical condition observed on the signal
+    arriving from B.
 ```
 
-This is why PIPE has both signals.
+For Device A:
 
----
+```text
+TxElecIdle_A
+    controls A -> B
 
-# 2. TxElecIdle
+RxElecIdle_A
+    observes B -> A
+```
 
-## 2.1 Direction
+The same relationship exists symmetrically for Device B.
 
-`TxElecIdle` is driven from the MAC toward the PHY.
+## `TxElecIdle`
+
+### Signal Direction
+
+`TxElecIdle` is driven from the MAC toward the PHY transmitter.
 
 ```text
 MAC
@@ -63,11 +72,9 @@ PHY transmitter
 TX+ / TX-
 ```
 
-It is a **command/control signal**.
+It is a control signal rather than a receive-status indication.
 
----
-
-## 2.2 Meaning
+### Functional Meaning
 
 When:
 
@@ -75,13 +82,16 @@ When:
 TxElecIdle = 1
 ```
 
-the MAC is telling the PHY:
+the MAC commands the PHY to place the local transmitter into Electrical Idle.
+
+Conceptually:
 
 ```text
-"Place my transmitter into Electrical Idle."
+TxElecIdle = 1
+    "Place the local transmitter into Electrical Idle."
 ```
 
-The PHY stops normal high-speed differential transmission and drives the transmitter into the electrical-idle condition defined by the PHY/PCIe electrical requirements.
+The PHY then stops normal high-speed differential transmission and establishes the transmitter Electrical Idle condition required by the physical interface.
 
 When:
 
@@ -89,22 +99,22 @@ When:
 TxElecIdle = 0
 ```
 
-and the PHY is in an appropriate active state such as P0, the transmitter can send the parallel data presented by the MAC.
+and the PHY is in an operating condition that permits normal transmission, such as P0, the PHY can transmit the parallel data supplied by the MAC.
 
-A useful memory rule is:
+The essential interpretation is therefore:
 
 ```text
-TxElecIdle = 1
-    "I am making MY transmitter electrically idle."
+TxElecIdle
+    = local transmitter control
 ```
 
----
+It does not report whether the remote device has stopped transmitting.
 
-# 3. RxElecIdle
+## `RxElecIdle`
 
-## 3.1 Direction
+### Signal Direction
 
-`RxElecIdle` travels in the opposite direction.
+`RxElecIdle` travels in the opposite direction, from the PHY receiver toward the MAC.
 
 ```text
 RX+ / RX-
@@ -117,11 +127,9 @@ PHY receiver
 MAC
 ```
 
-It is a **status indication** produced by the PHY.
+It is a receive-side status indication.
 
----
-
-## 3.2 Meaning
+### Functional Meaning
 
 When:
 
@@ -129,21 +137,9 @@ When:
 RxElecIdle = 1
 ```
 
-the PHY is reporting:
+the PHY reports that Electrical Idle has been detected on the local receive lane.
 
-```text
-"Electrical Idle has been detected on my receive lane."
-```
-
-It does **not** mean:
-
-```text
-"My receiver circuit is powered off."
-```
-
-The receiver may still be powered, active, and continuously monitoring the RX pins.
-
-A better conceptual name would be:
+A useful conceptual interpretation is:
 
 ```text
 rx_electrical_idle_detected
@@ -155,18 +151,17 @@ rather than:
 receiver_is_idle
 ```
 
----
+The distinction is important. `RxElecIdle` describes the incoming electrical signal. It does not state that the receiver circuitry itself has been disabled or powered down.
 
-## 3.3 What the PHY Is Detecting
-
-The PHY receiver monitors the differential signal on:
+The receiver may remain powered and continue monitoring the receive pins while reporting:
 
 ```text
-RX+
-RX-
+RxElecIdle = 1
 ```
 
-Conceptually, the receive front end contains an electrical-idle or squelch detector.
+### Electrical-Idle Detection
+
+Conceptually, a PHY receiver may be viewed as containing both a normal receive path and an electrical-idle detection mechanism.
 
 ```text
 RX+ / RX-
@@ -174,108 +169,49 @@ RX+ / RX-
     v
 Analog receive front end
     |
-    +--------------------------+
-    |                          |
-    v                          v
+    +-----------------------------+
+    |                             |
+    v                             v
 CDR / deserializer       Electrical-idle detector
-                               |
-                               v
-                          RxElecIdle
+                                      |
+                                      v
+                                  RxElecIdle
 ```
 
-When sufficient high-speed differential activity is detected:
+When sufficient high-speed differential activity is present:
 
 ```text
 RxElecIdle = 0
 ```
 
-When the signal satisfies the PHY's electrical-idle detection condition:
+When the incoming signal satisfies the PHY's Electrical Idle detection condition:
 
 ```text
 RxElecIdle = 1
 ```
 
-The exact analog detection implementation is PHY-dependent.
+The actual analog detection circuitry and implementation details are PHY-dependent.
 
----
+## Relationship Between the Two Link Ends
 
-# 4. RxElecIdle Does Not Mean "Valid Data"
+The transmit Electrical Idle command at one endpoint can correspond to a receive Electrical Idle indication at the other endpoint.
 
-A very important distinction is:
-
-```text
-RxElecIdle
-```
-
-and:
-
-```text
-RxValid
-```
-
-do not mean the same thing.
-
-`RxElecIdle` asks:
-
-```text
-"Is the incoming lane electrically idle?"
-```
-
-`RxValid` asks:
-
-```text
-"Is valid receive data/symbol information available?"
-```
-
-Therefore this condition can occur:
-
-```text
-RxElecIdle = 0
-RxValid    = 0
-```
-
-Meaning:
-
-```text
-Electrical activity is present,
-but valid aligned receive data is not yet available.
-```
-
-A possible sequence is:
-
-```text
-Remote transmitter starts
-        |
-        v
-Electrical activity appears
-        |
-        v
-RxElecIdle -> 0
-        |
-        v
-CDR locks / receive processing stabilizes
-        |
-        v
-RxValid -> 1
-```
-
----
-
-# 5. TxElecIdle and RxElecIdle Observe Different Directions
-
-For Device A:
+For Device A transmitting toward Device B:
 
 ```text
 Device A                                    Device B
 
-          TxElecIdle_A
-MAC_A -----------> PHY_TX_A
-                       |
-                       | A -> B
-                       +----------------------> PHY_RX_B
-                                                  |
-                                                  v
-                                            RxElecIdle_B
+MAC_A
+  |
+  | TxElecIdle_A
+  v
+PHY_TX_A
+  |
+  |          A -> B
+  +---------------------------------------> PHY_RX_B
+                                             |
+                                             v
+                                        RxElecIdle_B
 ```
 
 If Device A asserts:
@@ -284,13 +220,13 @@ If Device A asserts:
 TxElecIdle_A = 1
 ```
 
-then eventually Device B may detect:
+then Device A's transmitter enters Electrical Idle. Device B may subsequently detect that condition and report:
 
 ```text
 RxElecIdle_B = 1
 ```
 
-Therefore:
+Thus:
 
 ```text
 A.TxElecIdle
@@ -302,9 +238,9 @@ and:
 B.RxElecIdle
 ```
 
-can describe the same physical A-to-B electrical-idle event from opposite ends.
+can represent opposite-end views of the same physical A-to-B Electrical Idle event.
 
-But:
+By contrast:
 
 ```text
 A.TxElecIdle
@@ -316,87 +252,105 @@ and:
 A.RxElecIdle
 ```
 
-describe two different directions.
+refer to different physical directions.
 
-For Device A:
+This distinction is fundamental to any PIPE wrapper or LTSSM implementation.
 
-```text
-TxElecIdle_A
-    controls A -> B
+## Independent Electrical Idle Conditions
 
-RxElecIdle_A
-    observes B -> A
-```
+Because PCIe is full-duplex, transmit and receive Electrical Idle states do not need to change simultaneously.
 
----
-
-# 6. Why RxElecIdle Is Needed If TxElecIdle Already Exists
-
-Because PCIe is full-duplex.
-
-Suppose Device A does:
+For example, Device A may command its transmitter idle:
 
 ```text
 TxElecIdle_A = 1
 ```
 
-Then:
+while Device B is still actively transmitting toward Device A:
 
 ```text
-A -> B becomes electrically idle.
+RxElecIdle_A = 0
 ```
 
-But Device B may still be transmitting toward A:
-
-```text
-B -> A remains active.
-```
-
-Therefore Device A could have:
+The combined state is therefore:
 
 ```text
 TxElecIdle_A = 1
 RxElecIdle_A = 0
 ```
 
-This means:
+which means:
 
 ```text
-A has stopped transmitting,
-but A still sees B transmitting.
+A -> B : A has stopped transmitting.
+
+B -> A : A still detects incoming electrical activity.
 ```
 
-Later B may also enter Electrical Idle.
-
-Then A may see:
+If Device B later also enters Electrical Idle, Device A may observe:
 
 ```text
 RxElecIdle_A = 1
 ```
 
-Now both directions are electrically quiet from A's point of view.
+At that point, from Device A's perspective:
 
 ```text
-A -> B : local TX is idle
+A -> B : local transmitter is electrically idle.
 
-B -> A : local RX detects Electrical Idle
+B -> A : incoming signal is detected as electrically idle.
 ```
 
----
+## `RxElecIdle` and `RxValid`
 
-# 7. RxElecIdle Is Not Receiver Detection
+`RxElecIdle` must not be confused with `RxValid`.
 
-PCIe receiver detection in the LTSSM `Detect` state is a different mechanism.
-
-## Receiver Detection
-
-Receiver detection asks:
+The two signals answer different questions:
 
 ```text
-"Is a receiver termination physically present at the far end?"
+RxElecIdle
+    Is the incoming lane electrically idle?
+
+RxValid
+    Is valid receive data or symbol information available?
 ```
 
-Typical PIPE mechanism:
+The following state is therefore possible:
+
+```text
+RxElecIdle = 0
+RxValid    = 0
+```
+
+This indicates that electrical activity is present, but valid receive data is not yet available.
+
+A simplified receive startup sequence can be represented as:
+
+```text
+Remote transmitter starts
+        |
+        v
+Electrical activity appears
+        |
+        v
+RxElecIdle -> 0
+        |
+        v
+CDR and receive processing stabilize
+        |
+        v
+RxValid -> 1
+```
+
+Consequently, deassertion of `RxElecIdle` is not equivalent to the availability of valid decoded data.
+
+## Electrical Idle Versus Receiver Detection
+
+Electrical Idle detection is also distinct from PCIe receiver detection.
+
+Receiver detection asks whether a suitable receiver termination is physically present at the far end of the link. It is associated with LTSSM receiver-detection operations such as those performed during `Detect`.
+
+A simplified PIPE interaction is:
 
 ```text
 LTSSM Detect.Active
@@ -411,47 +365,50 @@ PHY performs receiver detection
 PhyStatus / RxStatus
         |
         v
-Receiver present or not present
+Receiver present or absent
 ```
 
-## RxElecIdle
+`RxElecIdle`, in contrast, reports whether the incoming receive lane is currently electrically idle.
 
-RxElecIdle asks:
+The distinction can be summarized as follows:
+
+| Function           | Meaning                                                               |
+| ------------------ | --------------------------------------------------------------------- |
+| Receiver Detection | Determines whether a receiver termination is present at the far end   |
+| `RxElecIdle`       | Reports whether the incoming lane is detected as electrically idle    |
+| `RxValid`          | Reports whether valid receive data or symbol information is available |
+| `PowerDown`        | Requests a PHY operating or power state                               |
+
+Receiver detection therefore concerns endpoint presence, whereas Electrical Idle detection concerns the instantaneous electrical activity of the incoming signal.
+
+## Electrical Idle Versus PHY Power State
+
+Electrical Idle and PHY power state are related concepts, but they are not interchangeable.
+
+`TxElecIdle` describes the signaling condition requested from the local transmitter:
 
 ```text
-"Is the incoming receive lane currently detected as electrically idle?"
+TxElecIdle = 1
+    local TX is commanded into Electrical Idle
 ```
 
-Comparison:
-
-| Concept | Main Question |
-|---|---|
-| Receiver Detection | Is a receiver termination present at the far end? |
-| RxElecIdle | Is the incoming lane electrically idle? |
-| RxValid | Is valid receive data available? |
-| PowerDown | What operating/power state is the PHY being requested to use? |
-
----
-
-# 8. RxElecIdle Is Not the Receiver Power State
-
-Another important distinction is between:
+It does not inherently mean:
 
 ```text
-RxElecIdle
+PowerDown = P1
 ```
 
-and:
+Similarly:
 
 ```text
-PowerDown
+RxElecIdle = 1
 ```
 
-If the PHY is in P1, the receiver may be unavailable for normal receive processing.
+does not mean that the local receiver has been powered down.
 
-The MAC already knows this from the PHY power-state control/handshake.
+PHY operating state is controlled separately through mechanisms such as `PowerDown`, with operation completion reported through `PhyStatus` where applicable.
 
-Conceptually:
+A conceptual power-state transition is:
 
 ```text
 PowerDown = P1
@@ -463,22 +420,12 @@ PHY transitions to P1
 PhyStatus indicates completion
         |
         v
-MAC treats normal receiver operation as inactive
+MAC treats normal receiver operation as unavailable
 ```
 
-You should not use:
+A MAC implementation should therefore track receiver availability using the PHY operating state rather than interpreting `RxElecIdle` as a power-state indication.
 
-```text
-RxElecIdle = 1
-```
-
-to mean:
-
-```text
-"The receiver is powered down."
-```
-
-A useful implementation is:
+For example:
 
 ```verilog
 wire rx_receiver_active;
@@ -488,15 +435,367 @@ assign rx_receiver_active =
     (PowerDown == P0S);
 ```
 
-Then normal receive status can be qualified with receiver availability.
+Receive-status information can then be qualified using the actual PHY availability state when required by the architecture.
 
----
+## Electrical Idle Ordered Set and Physical Electrical Idle
 
-# 9. Synchronizing RxElecIdle
+PCIe separates the protocol notification of an Electrical Idle transition from the actual physical transition of the transmitter.
 
-In many PIPE implementations, `RxElecIdle` is asynchronous to `pclk`.
+These two mechanisms are:
 
-Therefore a MAC-side wrapper may synchronize it.
+```text
+EIOS
+    Electrical Idle Ordered Set
+
+TxElecIdle
+    PIPE command controlling the physical transmitter
+```
+
+They are related but perform different functions.
+
+### EIOS
+
+The Electrical Idle Ordered Set is transmitted over the PCIe link as protocol information.
+
+Conceptually, it informs the remote endpoint that the current transmit direction is intentionally transitioning toward Electrical Idle.
+
+It is sent through the normal transmit datapath:
+
+```text
+MAC / LTSSM
+    |
+    | EIOS through TxData / TxDataK
+    v
+Local PHY
+    |
+    | serialize
+    v
+PCIe lane
+    |
+    v
+Remote receiver
+```
+
+The remote endpoint can decode the ordered set using its normal receive logic.
+
+### `TxElecIdle`
+
+After the required ordered-set transmission, the MAC commands the PHY transmitter to enter the actual electrical-idle condition:
+
+```text
+MAC / LTSSM
+    |
+    | TxElecIdle = 1
+    v
+Local PHY
+    |
+    v
+TX+/TX- enter Electrical Idle
+```
+
+The fundamental sequence is therefore:
+
+```text
+Transmit EIOS
+      |
+      v
+Protocol notification to the remote endpoint
+      |
+      v
+Assert TxElecIdle
+      |
+      v
+Local PHY physically enters Electrical Idle
+```
+
+The two operations have clearly separated responsibilities:
+
+```text
+LTSSM / MAC
+    understands PCIe protocol
+    generates EIOS
+    determines when Electrical Idle is required
+
+PHY
+    implements the analog transmitter
+    responds to TxElecIdle
+    creates the physical Electrical Idle condition
+```
+
+The PHY therefore does not need to inspect the outgoing symbol stream and independently decide that an EIOS pattern should automatically disable its transmitter. The MAC/LTSSM supplies the ordered set through the normal transmit interface and subsequently uses `TxElecIdle` to request the physical state change.
+
+## Why EIOS and `TxElecIdle` Are Both Needed
+
+EIOS alone does not guarantee that the transmitter physically stops signaling.
+
+If EIOS were transmitted without subsequently asserting `TxElecIdle`, the remote endpoint could receive the protocol notification while the local PHY continued transmitting whatever data appeared later on the transmit interface.
+
+Conceptually:
+
+```text
+EIOS
+    = protocol indication
+
+TxElecIdle
+    = physical transmitter action
+```
+
+Conversely, abruptly forcing the transmitter into Electrical Idle without the appropriate protocol indication removes the contextual information that allows the remote link partner to interpret the transition correctly.
+
+Without the preceding protocol context, the remote receiver might observe only:
+
+```text
+normal signaling
+      |
+      v
+electrical activity disappears
+      |
+      v
+RxElecIdle = 1
+```
+
+The disappearance of electrical activity alone does not inherently encode why signaling stopped. Depending on operating context, possibilities could include an intentional protocol transition, signal loss, CDR disruption, reset behavior, or another physical event.
+
+The ordered-set information therefore provides protocol context, whereas `RxElecIdle` describes the physical electrical condition.
+
+A simplified expected sequence is:
+
+```text
+Remote receives valid PCIe symbols
+        |
+        v
+Remote receives EIOS
+        |
+        v
+Protocol logic recognizes an intended idle transition
+        |
+        v
+Remote transmitter activity disappears
+        |
+        v
+Receive Electrical Idle is detected or inferred
+```
+
+## EIOS Detection and `RxElecIdle` Are Independent Observations
+
+Detection of Electrical Idle on the receive pins does not prove that an EIOS was successfully decoded immediately beforehand.
+
+These are separate observations.
+
+Ordered-set recognition occurs through the receive datapath:
+
+```text
+RxData / RxDataK
+      |
+      v
+Ordered-set recognition
+      |
+      v
+rx_eios_detected
+```
+
+Electrical Idle detection occurs through PHY electrical-status logic:
+
+```text
+RX electrical condition
+      |
+      v
+RxElecIdle
+      |
+      v
+mac_rx_elecidle
+```
+
+Thus:
+
+```text
+rx_eios_detected
+```
+
+and:
+
+```text
+mac_rx_elecidle
+```
+
+represent different types of information.
+
+The LTSSM can interpret both observations according to the requirements of the current state. Neither should automatically be treated as a substitute for the other.
+
+## `Recovery.Speed`
+
+`Recovery.Speed` is a particularly important use of Electrical Idle because the link intentionally stops signaling at the current rate before changing the physical signaling rate.
+
+A simplified Gen1-to-Gen2 transition can be represented as:
+
+```text
+Current speed = Gen1
+        |
+        v
+Recovery.RcvrLock
+        |
+        | TS1
+        | speed_change = 1
+        | advertise supported rates
+        v
+Recovery.RcvrCfg
+        |
+        | TS2
+        | speed_change = 1
+        | establish common rate
+        v
+Recovery.Speed
+        |
+        | transmit required EIOS
+        | assert TxElecIdle
+        | establish required RX Electrical Idle condition
+        v
+Request PHY rate change
+        |
+        v
+Gen1 -> Gen2
+        |
+        v
+Recovery.RcvrLock
+        |
+        | TS1 at Gen2
+        | speed_change = 0
+        v
+Recovery.RcvrCfg
+        |
+        | TS2 at Gen2
+        | speed_change = 0
+        v
+Recovery.Idle
+        |
+        v
+L0 at Gen2
+```
+
+This diagram is intentionally architectural rather than normative. Exact transition criteria, timers, ordered-set requirements, and Electrical Idle inference rules are defined by the applicable PCIe specification.
+
+### Functional Sequence
+
+The `Recovery.Speed` operation can be divided into several responsibilities:
+
+```text
+Recovery.Speed
+      |
+      v
+Satisfy required protocol conditions
+      |
+      v
+Transmit EIOS
+      |
+      v
+Assert local TxElecIdle
+      |
+      v
+Establish or recognize required receive-side
+Electrical Idle condition
+      |
+      v
+Request new PHY Rate
+      |
+      v
+Wait for rate-change completion
+      |
+      v
+Resume Recovery at the new rate
+```
+
+The purpose of entering Electrical Idle before the rate change is to stop active transmission at the old signaling rate in an orderly manner before the PHY changes operating rate.
+
+## `Recovery.Speed` from One Endpoint
+
+Consider Device A.
+
+The transmit-side sequence is:
+
+```text
+Device A LTSSM
+      |
+      v
+Transmit EIOS
+      |
+      v
+mac_tx_elecidle = 1
+      |
+      v
+TxElecIdle_A = 1
+      |
+      v
+A's PHY transmitter enters Electrical Idle
+```
+
+The receive-side sequence is independent:
+
+```text
+Device B enters Electrical Idle
+      |
+      v
+B stops normal signaling toward A
+      |
+      v
+A's PHY detects the receive idle condition
+      |
+      v
+RxElecIdle_A = 1
+      |
+      v
+mac_rx_elecidle_A = 1
+```
+
+Device A therefore maintains two different facts:
+
+```text
+Transmit direction:
+    A commanded its own transmitter into Electrical Idle.
+
+Receive direction:
+    A detected or inferred that the incoming direction is idle.
+```
+
+These must not be collapsed into one state variable unless the higher-level design explicitly combines them after preserving their different meanings.
+
+## `Recovery.Speed` Across Both Endpoints
+
+A symmetrical view of both devices is:
+
+```text
+Device A                                      Device B
+
+send EIOS                                    send EIOS
+    |                                            |
+    v                                            v
+TxElecIdle_A = 1                           TxElecIdle_B = 1
+    |                                            |
+    |          A -> B becomes idle              |
+    +------------------------------------------->|
+                                                 |
+                                                 v
+                                           RxElecIdle_B
+                                           or idle inference
+
+
+                                                 |
+    |          B -> A becomes idle              |
+    |<-------------------------------------------+
+    |
+    v
+RxElecIdle_A
+or idle inference
+```
+
+Each endpoint controls only its own transmit direction and observes the remote transmit direction through its receiver.
+
+This is the central architectural reason that both transmit and receive Electrical Idle information exist.
+
+## Receive Electrical Idle Synchronization
+
+In implementations where `RxElecIdle` is asynchronous to the MAC's `pclk` domain, the signal should not be consumed directly by synchronous MAC logic.
+
+A typical wrapper contains a two-stage synchronizer:
 
 ```text
 RxElecIdle
@@ -508,63 +807,27 @@ rx_ei_meta
 rx_ei_sync
     |
     v
-optional stability filter
-    |
-    v
-mac_rx_elecidle
+MAC logic
 ```
 
 Example:
 
 ```verilog
-reg       rx_ei_meta;
-reg       rx_ei_sync;
-reg [7:0] rx_ei_counter;
+reg rx_ei_meta;
+reg rx_ei_sync;
 
 always @(posedge pclk or negedge reset_n) begin
-
     if (!reset_n) begin
-
-        rx_ei_meta      <= 1'b1;
-        rx_ei_sync      <= 1'b1;
-        rx_ei_counter   <= 8'd0;
-        mac_rx_elecidle <= 1'b1;
-
+        rx_ei_meta <= 1'b1;
+        rx_ei_sync <= 1'b1;
     end else begin
-
         rx_ei_meta <= RxElecIdle;
         rx_ei_sync <= rx_ei_meta;
-
-        if (rx_ei_sync == mac_rx_elecidle) begin
-
-            rx_ei_counter <= 8'd0;
-
-        end
-        else if (RX_EI_FILTER_CYCLES == 0) begin
-
-            mac_rx_elecidle <= rx_ei_sync;
-            rx_ei_counter   <= 8'd0;
-
-        end
-        else if (rx_ei_counter >=
-                 (RX_EI_FILTER_CYCLES - 1)) begin
-
-            mac_rx_elecidle <= rx_ei_sync;
-            rx_ei_counter   <= 8'd0;
-
-        end
-        else begin
-
-            rx_ei_counter <= rx_ei_counter + 8'd1;
-
-        end
     end
 end
 ```
 
----
-
-# 10. Purpose of the Two Synchronizer Flops
+### First Synchronizer Stage
 
 The first stage:
 
@@ -572,7 +835,11 @@ The first stage:
 rx_ei_meta <= RxElecIdle;
 ```
 
-is the metastability-catching stage.
+acts as the metastability-catching stage.
+
+Because it directly samples the asynchronous input, it should not normally be used by functional state-machine logic.
+
+### Second Synchronizer Stage
 
 The second stage:
 
@@ -580,73 +847,55 @@ The second stage:
 rx_ei_sync <= rx_ei_meta;
 ```
 
-provides a synchronized value for functional logic.
+provides the synchronized functional value.
 
-Functional logic should use:
-
-```text
-rx_ei_sync
-```
-
-not:
+The intended hierarchy is therefore:
 
 ```text
+asynchronous PHY indication
+        |
+        v
 RxElecIdle
+        |
+        v
++-------------+
+| rx_ei_meta  |  first CDC stage
++-------------+
+        |
+        v
++-------------+
+| rx_ei_sync  |  synchronized functional value
++-------------+
+        |
+        v
+MAC / LTSSM logic
 ```
 
-and not:
+Functional logic should use `rx_ei_sync`, not the asynchronous `RxElecIdle` input or the first synchronizer stage.
 
-```text
-rx_ei_meta
-```
+## Optional Receive Electrical Idle Filtering
 
-Conceptually:
+Clock-domain synchronization and signal filtering solve different problems.
 
-```text
-asynchronous domain
-       |
-       v
-RxElecIdle
-       |
-       v
-+-------------+
-| rx_ei_meta  |   first CDC stage
-+-------------+
-       |
-       v
-+-------------+
-| rx_ei_sync  |   functional synchronized value
-+-------------+
-       |
-       v
-MAC logic
-```
+The synchronizer primarily addresses metastability associated with an asynchronous domain crossing.
 
----
-
-# 11. Purpose of the Optional Filter
-
-The synchronizer solves a CDC/metastability problem.
-
-The counter solves a different problem:
-
-```text
-short changes / chatter / glitches
-```
+An optional filter can address short excursions, chatter, or undesirable brief changes in the synchronized signal.
 
 For example:
 
 ```text
-Expected accepted value = 0
+Accepted value = 0
 
 rx_ei_sync:
 
 0 0 0 1 1 0 0 0
       -----
-      short excursion
+       short excursion
 ```
 
-If three stable samples are required, the short excursion can be rejected.
+If the implementation requires three consecutive samples before accepting a new value, this two-cycle excursion can be rejected.
+
+Conceptually:
 
 ```text
 rx_ei_sync        0  1  1  0
@@ -654,15 +903,11 @@ counter            0  1  2  0
 mac_rx_elecidle   0  0  0  0
 ```
 
-The counter effectively measures:
+The filter counter measures how many consecutive synchronized samples have remained different from the currently accepted `mac_rx_elecidle` value.
 
-> How many consecutive samples has `rx_ei_sync` remained different from the currently accepted `mac_rx_elecidle` value?
+### Filter-Length Interpretation
 
----
-
-# 12. Meaning of RX_EI_FILTER_CYCLES
-
-A clean convention is:
+A clear implementation convention is:
 
 ```text
 RX_EI_FILTER_CYCLES = 0
@@ -675,629 +920,122 @@ RX_EI_FILTER_CYCLES = N
     require N consecutive synchronized observations
 ```
 
-This filter value is an implementation choice.
+The filter length is an implementation parameter. It must not be interpreted as a PCIe architectural rule requiring Electrical Idle to remain asserted for an arbitrary fixed number of `pclk` cycles.
 
-It is **not** a PCIe rule saying that Electrical Idle must remain present for 3, 4, 32, or any other fixed number of `pclk` cycles.
+An appropriate filter value depends on factors such as:
 
-The selected value should be justified by:
+* target PHY behavior;
+* CDC architecture;
+* required glitch rejection;
+* LTSSM timing budget.
 
-```text
-target PHY behavior
-+
-CDC architecture
-+
-desired glitch rejection
-+
-LTSSM timing budget
-```
+Excessive filtering can delay legitimate LTSSM observations, so the filter must be chosen as part of the implementation timing architecture rather than as an arbitrary robustness measure.
 
----
+## Example `RxElecIdle` Synchronizer and Filter
 
-# 13. Where the MAC Uses RxElecIdle
-
-The MAC does not normally use `RxElecIdle` as packet data.
-
-Instead it provides physical-layer state information to receive-control and LTSSM logic.
-
-Conceptually:
-
-```text
-RxElecIdle
-    |
-    v
-synchronizer/filter
-    |
-    v
-mac_rx_elecidle
-    |
-    +----------------------+
-                           |
-                           v
-                       MAC/LTSSM
-                           ^
-                           |
-          +----------------+----------------+
-          |                                 |
-       RxValid                       ordered-set logic
-          |                                 |
-       RxData                        TS1 / TS2 / EIOS /
-       RxDataK                       EIEOS recognition
-```
-
-The LTSSM interprets these observations according to the current PCIe state.
-
----
-
-# 14. Electrical Idle in Recovery.Speed
-
-`Recovery.Speed` is an important example because the link intentionally stops old-rate signaling before changing signaling rate.
-
-For a simplified Gen1-to-Gen2 speed transition:
-```text
-          Current speed = Gen1
-                 |
-                 v
-        Recovery.RcvrLock
-                 |
-                 | TS1
-                 | speed_change = 1
-                 | advertise supported rates
-                 |
-                 v
-        Recovery.RcvrCfg
-                 |
-                 | TS2
-                 | speed_change = 1
-                 | confirm common supported rate
-                 |
-                 v
-        Recovery.Speed
-                 |
-                 | send EIOS
-                 | assert TxElecIdle
-                 | detect/infer RX Electrical Idle
-                 |
-                 v
-          change PHY Rate
-          Gen1 -> Gen2
-                 |
-                 v
-        Recovery.RcvrLock
-          at NEW Gen2 rate
-                 |
-                 | TS1
-                 | speed_change = 0
-                 |
-                 v
-        Recovery.RcvrCfg
-                 |
-                 | TS2
-                 | speed_change = 0
-                 |
-                 v
-          Recovery.Idle
-                 |
-                 v
-                L0
-             at Gen2
-```
-```text
-Recovery.RcvrCfg
-      |
-      | speed change negotiated
-      v
-Recovery.Speed
-      |
-      v
-send required Electrical Idle Ordered Set (EIOS)
-      |
-      v
-command local transmitter to Electrical Idle
-      |
-      v
-establish/recognize required receive-side Electrical Idle condition
-      |
-      v
-request PHY rate change
-      |
-      v
-wait for PHY rate-change completion
-      |
-      v
-resume Recovery operation at the new rate
-```
-
-The exact transition criteria and timers are defined by the applicable PCIe Base Specification.
-
----
-
-
-EIOS is a PCIe protocol object sent over the serial link. TxElecIdle is a PIPE control signal that tells the local PHY to physically stop differential transmission.
-
-A useful sequence is:
-
-MAC / LTSSM
-    |
-    | 1. Send EIOS as normal transmit symbols
-    v
-PIPE TxData / TxDataK
-    |
-    v
-PHY serializes EIOS
-    |
-    v
-Remote device receives EIOS
-
-then
-
-MAC / LTSSM
-    |
-    | 2. Assert TxElecIdle
-    v
-PIPE TxElecIdle = 1
-    |
-    v
-PHY actually drives TX+/TX- into Electrical Idle
-
-So EIOS means roughly:
-
-"I am about to enter Electrical Idle."
-
-Whereas TxElecIdle = 1 means:
-
-"PHY, now actually place the transmitter into the electrical-idle condition."
-
-The PHY does not normally inspect the outgoing byte stream and say, “I saw EIOS, therefore I should shut down my analog transmitter.” PIPE specifically separates those responsibilities. The PIPE specification notes that EIOS transmission is part of the normal transmit pipeline and should not require the PHY itself to detect the EIOS pattern; afterward TxElecIdle controls the physical transition.
-
-AMD likewise defines phy_txelecidle as the command that forces TX+/TX− to Electrical Idle; when asserted, the PHY drives the differential outputs to the electrical-idle/common-mode condition.
-
-So imagine Device A:
-
-Device A MAC                 Device A PHY               Device B
-
-Send EIOS
-    |
-    +---- TxData/TxDataK -----> serialize EIOS ---------> receives EIOS
-                                      |
-                                      |
-Assert TxElecIdle --------------------+
-                                      |
-                                      v
-                               TX physically idle ------> detects idle
-
-If you sent EIOS but never asserted TxElecIdle, the remote side could receive EIOS, but your PHY could continue electrically transmitting whatever subsequently appears on TxData.
-
-In other words:
-
-EIOS alone
-    = protocol notification
-
-TxElecIdle alone
-    = physical action
-
-A correct sequence needs both:
-
-EIOS
-  ↓
-"Tell partner what is about to happen"
-
-TxElecIdle = 1
-  ↓
-"Actually make it happen electrically"
-
-This separation is useful because the responsibilities are clean:
-
-LTSSM / MAC
-    knows PCIe protocol
-    generates EIOS
-    decides WHEN to enter idle
-
-PHY
-    knows analog transmitter implementation
-    responds to TxElecIdle
-    physically removes differential signaling
-
-
-    EIOS
-= protocol-level indication sent to the remote device
-  that this transmit direction is transitioning into Electrical Idle.
-
-TxElecIdle
-= local PIPE command telling your own PHY:
-  "Now physically place the transmitter into Electrical Idle."
-
-So the sequence is:
-
-MAC/LTSSM
-   |
-   | transmit EIOS through TxData/TxDataK
-   v
-Local PHY
-   |
-   | serializes EIOS
-   v
-Remote receiver
-   |
-   | understands the protocol transition
-   v
-
-then
-
-MAC/LTSSM
-   |
-   | TxElecIdle = 1
-   v
-Local PHY
-   |
-   | physically stops normal differential signaling
-   v
-TX lane enters Electrical Idle
-
-
-If we removed EIOS, the remote side would see only:
-
-normal traffic
-    ↓
-electrical activity disappears
-    ↓
-RxElecIdle = 1
-
-But from that observation alone, the receiver cannot immediately distinguish among cases such as:
-
-1. Partner intentionally entered Electrical Idle
-2. Signal was lost because of noise/channel problem
-3. CDR temporarily lost lock
-4. Partner reset or disappeared
-5. A protocol-defined idle transition is occurring
-
-EIOS solves that ambiguity.
-
-The intended sequence is:
-
-Remote receives valid PCIe symbols
-        ↓
-Remote receives EIOS
-        ↓
-Remote MAC understands:
-"an intentional Electrical Idle transition is beginning"
-        ↓
-transmitter actually stops signaling
-        ↓
-RxElecIdle / inferred-idle indication follows
-
-So EIOS is analogous to an orderly protocol notification, while disappearance of electrical activity is the physical event.
-
-
-
-# 15. Recovery.Speed Viewed from Device A
-
-Consider Device A.
-
-First, Device A handles its transmit direction.
-
-```text
-Device A LTSSM
-      |
-      v
-send EIOS
-      |
-      v
-mac_tx_elecidle = 1
-      |
-      v
-TxElecIdle_A = 1
-      |
-      v
-A's PHY transmitter enters Electrical Idle
-```
-
-Now consider Device A's receive direction.
-
-```text
-Device B enters Electrical Idle
-      |
-      v
-B stops normal signaling toward A
-      |
-      v
-A PHY detects the receive electrical-idle condition
-      |
-      v
-RxElecIdle_A = 1
-      |
-      v
-mac_rx_elecidle_A = 1
-```
-
-Therefore Device A has two different observations:
-
-```text
-Tx side:
-I commanded my transmitter idle.
-
-Rx side:
-I detect/infer the incoming direction is idle.
-```
-
----
-
-# 16. Recovery.Speed Viewed from Both Devices
-
-A simplified conceptual picture is:
-
-```text
-Device A                                      Device B
-
-send EIOS                                    send EIOS
-    |                                            |
-    v                                            v
-TxElecIdle_A = 1                           TxElecIdle_B = 1
-    |                                            |
-    |         A -> B goes idle                   |
-    +------------------------------------------->|
-                                                 |
-                                      RxElecIdle_B / idle inference
-
-
-                                                 |
-    |         B -> A goes idle                   |
-    |<-------------------------------------------+
-    |
-RxElecIdle_A / idle inference
-```
-
-Each side controls its own TX direction and observes the opposite RX direction.
-
-This is the key reason both TX and RX electrical-idle information exist.
-
----
-
-# 17. Does RxElecIdle Prove That EIOS Was Received?
-
-No.
-
-`RxElecIdle = 1` means:
-
-```text
-"The receive lane is detected as electrically idle."
-```
-
-It does not by itself mean:
-
-```text
-"I successfully decoded EIOS immediately before the lane went idle."
-```
-
-These are different observations.
-
-A MAC may have:
-
-```text
-rx_eios_detected
-```
-
-from receive ordered-set decoding, and separately:
-
-```text
-mac_rx_elecidle
-```
-
-from the PHY electrical-idle indication.
-
-Conceptually:
-
-```text
-RxData / RxDataK
-      |
-      v
-EIOS recognition
-      |
-      v
-rx_eios_detected
-
-
-RX electrical condition
-      |
-      v
-RxElecIdle
-      |
-      v
-mac_rx_elecidle
-```
-
-Together, and interpreted in the correct LTSSM state, they provide stronger protocol information.
-
----
-# 18. Better Recovery.Speed Architecture
-
-Conceptually:
-
-```text
-               Recovery.Speed
-                     |
-                     v
-          required protocol conditions
-                     |
-                     v
-                 send EIOS
-                     |
-                     v
-         assert local TxElecIdle
-                     |
-                     v
-     determine receive Electrical Idle
-      using applicable PCIe rules
-                     |
-                     v
-       idle conditions satisfied
-                     |
-                     v
-             request new Rate
-                     |
-                     v
-             wait for PhyStatus
-                     |
-                     v
-        continue Recovery at new rate
-```
-
-This keeps the responsibilities clean:
-
-```text
-LTSSM
-    decides WHEN
-
-MAC receive logic
-    interprets WHAT WAS RECEIVED
-
-PIPE wrapper
-    transports/conditions controls and status
-
-PHY
-    performs electrical transmission/reception
-    and physical rate/power operations
-```
-
----
-
-# 19. Relationship to Power States
-
-Electrical Idle and PHY power state are related but are not identical.
-
-For example:
-
-```text
-TxElecIdle = 1
-```
-
-means the transmitter is commanded electrically idle.
-
-It does not automatically mean:
-
-```text
-PowerDown = P1
-```
-
-Similarly:
-
-```text
-RxElecIdle = 1
-```
-
-does not mean the receiver is powered down.
-
-A useful separation is:
-
-```text
-TxElecIdle
-    condition of local TX signaling
-
-RxElecIdle
-    detected condition of incoming RX signaling
-
-PowerDown
-    requested operating/power state of PHY
-
-PhyStatus
-    completion indication for PHY operations
-```
-
----
-
-# 20. Complete Mental Model
-
-For one PCIe device:
-
-```text
-                         LTSSM
-                           |
-              +------------+-------------+
-              |                          |
-              v                          |
-       mac_tx_elecidle                   |
-              |                          |
-              v                          |
-         PIPE wrapper                    |
-              |                          |
-              v                          |
-         TxElecIdle                      |
-              |                          |
-              v                          |
-          Local PHY TX                   |
-              |                          |
-==============|====== PCIe Link =========|==============
-              |                          |
-          Local PHY RX                   |
-              |                          |
-              v                          |
-         RxElecIdle                      |
-              |                          |
-              v                          |
-        CDC synchronizer                 |
-              |                          |
-              v                          |
-       optional filter                   |
-              |                          |
-              v                          |
-      mac_rx_elecidle -------------------+
-```
-
-In one sentence:
-
-> **The LTSSM uses TxElecIdle to control whether its own transmitter is electrically active, while it uses RxElecIdle as physical-layer information about whether the opposite transmit direction is electrically idle.**
-
----
-
-# 21. Quick Comparison Table
-
-| Signal / Function | Direction | Meaning |
-|---|---|---|
-| `TxElecIdle` | MAC -> PHY | Command local TX into Electrical Idle |
-| `RxElecIdle` | PHY -> MAC | RX Electrical Idle detected on incoming lane |
-| `RxValid` | PHY -> MAC | Valid receive data/symbol information is available |
-| `TxDetectRx` | MAC -> PHY | Request receiver-termination detection |
-| `RxStatus` | PHY -> MAC | Receive status/errors; also carries receiver-detect result during detection |
-| `PowerDown` | MAC -> PHY | Request PHY power/operating state |
-| `PhyStatus` | PHY -> MAC | Completion of certain PHY operations such as rate/power/detect |
-
----
-
-
-# 22. Reference Basis
-
-This chapter is written as an implementation-oriented teaching reference for a Gen1/Gen2 PIPE-style MAC/PHY interface. Signal semantics were cross-checked against:
-
-- AMD PCI Express PHY Product Guide **PG345**, Status Signals Interface Ports (`phy_rxelecidle`, `phy_rxvalid`, `phy_phystatus`).
-- AMD PCI Express documentation **PG343**, Command Signals (`phy_txelecidle`, `phy_txdetectrx`, `phy_powerdown`, `phy_rate`).
-- AMD PCIe PIPE per-lane interface documentation **PG054**, including `PIPERXnELECIDLE` and `PIPETXnELECIDLE`.
-- PCI Express PIPE Architecture Specification for the general MAC/PHY interface model and Gen1/Gen2 electrical-idle behavior.
-- The PCI Express Base Specification for exact LTSSM `Recovery.Speed` entry/exit criteria, Electrical Idle inference rules, and protocol timing.
-
-For implementation, always use the PIPE revision and PCIe Base Specification revision applicable to the selected PHY/IP.
-
+The following implementation combines a two-stage synchronizer with an optional consecutive-sample filter:
 
 ```verilog
-/*
-ST_RESET  -> phy_ready = 0
-ST_IDLE   -> phy_ready = 1
-ST_WAIT   -> phy_ready = 1
-ST_FAULT  -> phy_ready = 0
-*/
+reg       rx_ei_meta;
+reg       rx_ei_sync;
+reg [7:0] rx_ei_counter;
 
+always @(posedge pclk or negedge reset_n) begin
+    if (!reset_n) begin
+        rx_ei_meta      <= 1'b1;
+        rx_ei_sync      <= 1'b1;
+        rx_ei_counter   <= 8'd0;
+        mac_rx_elecidle <= 1'b1;
+    end else begin
+        // Two-stage synchronization.
+        rx_ei_meta <= RxElecIdle;
+        rx_ei_sync <= rx_ei_meta;
 
-assign phy_ready = (state == ST_IDLE) || (state == ST_WAIT);
+        // No pending change.
+        if (rx_ei_sync == mac_rx_elecidle) begin
+            rx_ei_counter <= 8'd0;
+        end
 
+        // Filtering disabled.
+        else if (RX_EI_FILTER_CYCLES == 0) begin
+            mac_rx_elecidle <= rx_ei_sync;
+            rx_ei_counter   <= 8'd0;
+        end
 
-// ========================================================================
-// Transmit electrical-idle control
-// ========================================================================
-// force_tx_idle - wrapper itself requires TX Electrical Idle, even if the MAC did not explicitly request it.
-// effective_tx_idle - Final decision used to drive TxElecIdle
-// state == ST_WAIT - the wrapper is waiting for some PHY operation such as a rate change, power-state change, 
-// or receiver detection to complete. During that time, normal transmission is suppressed.
-// starting_operation: it predicts the FSM transition one cycle early enough 
-// for other registered outputs to react on the same edge.
+        // New value has remained stable long enough.
+        else if (
+            rx_ei_counter >=
+            (RX_EI_FILTER_CYCLES - 1)
+        ) begin
+            mac_rx_elecidle <= rx_ei_sync;
+            rx_ei_counter   <= 8'd0;
+        end
 
+        // Continue counting consecutive samples.
+        else begin
+            rx_ei_counter <= rx_ei_counter + 8'd1;
+        end
+    end
+end
+```
+
+The accepted status remains unchanged until the synchronized input has remained different for the configured duration.
+
+## MAC and LTSSM Use of `RxElecIdle`
+
+`RxElecIdle` is not packet data. It is physical-layer status used by receive-control and LTSSM logic.
+
+A typical architectural relationship is:
+
+```text
+RxElecIdle
+    |
+    v
+CDC synchronization
+    |
+    v
+optional filter
+    |
+    v
+mac_rx_elecidle
+    |
+    +-----------------------------+
+                                  |
+                                  v
+                              MAC / LTSSM
+                                  ^
+                                  |
+               +------------------+------------------+
+               |                                     |
+            RxValid                         ordered-set logic
+               |                                     |
+        RxData / RxDataK                   TS1 / TS2 / EIOS /
+                                            EIEOS recognition
+```
+
+The LTSSM interprets these independent pieces of information according to the currently active PCIe state.
+
+A robust implementation therefore separates:
+
+```text
+physical electrical status
+ordered-set recognition
+receive-data validity
+PHY power state
+PHY operation completion
+```
+
+and combines them only in the state machine where their protocol meaning is known.
+
+## Transmit Electrical Idle Control in a PIPE Wrapper
+
+A PIPE wrapper may need to force Electrical Idle for reasons beyond an explicit LTSSM request.
+
+For example, transmission may need to remain suppressed while the PHY is not ready, during certain power states, or while another PHY operation is in progress.
+
+A possible architecture is:
+
+```verilog
 wire force_tx_idle;
 wire effective_tx_idle;
 
@@ -1310,127 +1048,313 @@ assign force_tx_idle =
 assign effective_tx_idle =
     mac_tx_elecidle ||
     force_tx_idle;
+```
 
+In this structure:
 
-// ========================================================================
-// TX datapath
-// ========================================================================
+```text
+mac_tx_elecidle
+    = protocol-level request from the MAC/LTSSM
 
+force_tx_idle
+    = wrapper-level requirement preventing normal transmission
+
+effective_tx_idle
+    = final Electrical Idle decision sent to the PHY
+```
+
+The wrapper therefore enforces a safe final transmitter state even if the MAC has not independently requested Electrical Idle.
+
+### Example PHY Readiness Logic
+
+For a wrapper FSM with states such as:
+
+```text
+ST_RESET
+ST_IDLE
+ST_WAIT
+ST_FAULT
+```
+
+PHY readiness may be defined as:
+
+```verilog
+assign phy_ready =
+    (state == ST_IDLE) ||
+    (state == ST_WAIT);
+```
+
+The exact meaning of readiness is architecture-dependent, but the important principle is that transmit behavior should be conditioned by the wrapper's knowledge of PHY operating state.
+
+## Transmit Datapath Behavior During Electrical Idle
+
+When the final Electrical Idle decision is asserted, normal transmit data is not functionally meaningful to the serial transmitter.
+
+A wrapper may explicitly drive benign values on the transmit datapath:
+
+```verilog
 always @(posedge pclk or negedge reset_n) begin
-
     if (!reset_n) begin
-
         TxData       <= 8'h00;
         TxDataK      <= 1'b0;
         TxElecIdle   <= 1'b1;
         TxCompliance <= 1'b0;
-
     end else begin
-
         TxElecIdle <= effective_tx_idle;
 
-        // TxCompliance is valid only when actively transmitting in P0.
-        /* TxCompliance is used for PCIe compliance testing, not normal packet transmission.
-           Its main purpose is to support the LTSSM Polling.Compliance substate, 
-           where the transmitter sends a special compliance pattern so lab equipment can measure
-           whether the PCIe transmitter meets electrical requirements 
-           such as voltage, timing, jitter, and signal quality. */
         TxCompliance <=
             mac_tx_compliance &&
             (PowerDown == P0) &&
             !effective_tx_idle;
 
-        // The PHY ignores TxData and TxDataK during electrical idle.
         if (effective_tx_idle) begin
-
             TxData  <= 8'h00;
             TxDataK <= 1'b0;
-
         end else begin
-
             TxData  <= mac_tx_data;
             TxDataK <= mac_tx_datak;
-
         end
     end
 end
-
-
-
-
-
-
-
-
-// ========================================================================
-// RxElecIdle synchronization and filtering
-// ========================================================================
-
-reg       rx_ei_meta;
-reg       rx_ei_sync;
-reg [7:0] rx_ei_counter;
-
-
-always @(posedge pclk or negedge reset_n) begin
-
-    if (!reset_n) begin
-
-        rx_ei_meta      <= 1'b1;
-        rx_ei_sync      <= 1'b1;
-        rx_ei_counter   <= 8'd0;
-        mac_rx_elecidle <= 1'b1;
-
-    end else begin
-
-        // Two-stage synchronization.
-        rx_ei_meta <= RxElecIdle;
-        rx_ei_sync <= rx_ei_meta;
-
-        // No change is waiting to be accepted.
-        if (rx_ei_sync == mac_rx_elecidle) begin
-
-            rx_ei_counter <= 8'd0;
-
-        end
-        
-                /*
-                              short pulse
-                         ___
-            rx_ei_sync _|   |________
-            
-            counter      1 2 3 0
-            
-            mac_rx_elecidle
-                         __________________
-                         no change
-             
-             */
-        else if (RX_EI_FILTER_CYCLES == 0) begin
-
-            mac_rx_elecidle <= rx_ei_sync;
-            rx_ei_counter   <= 8'd0;
-
-        end
-
-        // New value remained stable for the configured duration.
-        else if (
-            rx_ei_counter >=
-            (RX_EI_FILTER_CYCLES - 1)
-        ) begin
-
-            mac_rx_elecidle <= rx_ei_sync;
-            rx_ei_counter   <= 8'd0;
-
-        end
-
-        // Continue counting stable samples.
-        else begin
-
-            rx_ei_counter <=
-                rx_ei_counter + 8'd1;
-
-        end
-    end
-end
-
 ```
+
+The key behavior is:
+
+```text
+effective_tx_idle = 1
+    -> TxElecIdle asserted
+    -> normal TX datapath suppressed
+
+effective_tx_idle = 0
+    -> normal MAC transmit data forwarded
+```
+
+The zero values driven on `TxData` and `TxDataK` during Electrical Idle are an implementation choice associated with keeping inactive datapath values well defined; the Electrical Idle condition itself is established through `TxElecIdle`.
+
+## `TxCompliance` Interaction
+
+`TxCompliance` serves a different purpose from Electrical Idle. It is associated with PCIe transmitter compliance operation rather than normal packet transmission.
+
+A wrapper can qualify the signal so that compliance operation is allowed only when the PHY is actively transmitting in P0:
+
+```verilog
+TxCompliance <=
+    mac_tx_compliance &&
+    (PowerDown == P0) &&
+    !effective_tx_idle;
+```
+
+This separation preserves the distinction among:
+
+```text
+normal transmission
+Electrical Idle
+compliance transmission
+PHY power-state control
+```
+
+These modes should not be represented by a single overloaded control signal.
+
+## Recommended Responsibility Partitioning
+
+A clean PCIe implementation separates protocol policy from physical implementation.
+
+```text
+LTSSM
+    decides when protocol transitions occur
+
+MAC transmit logic
+    generates ordered sets and normal transmit data
+
+MAC receive logic
+    recognizes received ordered sets and valid data
+
+PIPE wrapper
+    conditions MAC/PHY controls and status
+    handles synchronization where required
+
+PHY
+    performs electrical transmission and reception
+    performs physical rate and power operations
+```
+
+During a speed change, the architecture can therefore be viewed as:
+
+```text
+                Recovery.Speed
+                     |
+                     v
+          protocol conditions satisfied
+                     |
+                     v
+                 send EIOS
+                     |
+                     v
+          assert local TxElecIdle
+                     |
+                     v
+      determine required RX idle condition
+                     |
+                     v
+             idle requirements met
+                     |
+                     v
+              request new Rate
+                     |
+                     v
+             wait for PhyStatus
+                     |
+                     v
+         continue Recovery at new rate
+```
+
+This partitioning prevents the PHY wrapper from becoming an unintended second LTSSM and prevents the LTSSM from directly implementing analog PHY behavior.
+
+## Important Signal Distinctions
+
+The principal PIPE signals involved in these operations can be summarized as follows:
+
+| Signal or Function | Direction  | Meaning                                                                                    |
+| ------------------ | ---------- | ------------------------------------------------------------------------------------------ |
+| `TxElecIdle`       | MAC -> PHY | Commands the local transmitter into Electrical Idle                                        |
+| `RxElecIdle`       | PHY -> MAC | Reports Electrical Idle detected on the incoming receive lane                              |
+| `RxValid`          | PHY -> MAC | Indicates that valid receive data or symbol information is available                       |
+| `TxDetectRx`       | MAC -> PHY | Requests receiver-termination detection                                                    |
+| `RxStatus`         | PHY -> MAC | Reports receive status and, where applicable, receiver-detection result                    |
+| `PowerDown`        | MAC -> PHY | Requests a PHY operating or power state                                                    |
+| `PhyStatus`        | PHY -> MAC | Reports completion of applicable PHY operations such as rate, power, or receiver detection |
+
+These signals describe different dimensions of PHY behavior and should not be used interchangeably.
+
+## Common Misunderstandings
+
+### `TxElecIdle` Does Not Describe the Local Receiver
+
+`TxElecIdle` applies exclusively to the local transmit direction.
+
+For Device A:
+
+```text
+TxElecIdle_A -> A to B
+```
+
+It provides no direct information about whether B is transmitting toward A.
+
+### `RxElecIdle` Does Not Mean the Receiver Is Powered Down
+
+`RxElecIdle = 1` means the incoming electrical signal is detected as idle. Receiver availability is determined through PHY operating-state information.
+
+### `RxElecIdle = 0` Does Not Mean Valid Data Is Available
+
+Electrical activity may be present before receive synchronization, alignment, or other processing has produced valid receive data.
+
+Thus:
+
+```text
+RxElecIdle = 0
+RxValid    = 0
+```
+
+is a legitimate conceptual condition.
+
+### `RxElecIdle` Is Not Receiver Detection
+
+Receiver detection determines whether a receiver termination exists at the far end. `RxElecIdle` determines whether incoming differential signaling is currently electrically idle.
+
+### `RxElecIdle = 1` Does Not Prove That EIOS Was Decoded
+
+Ordered-set recognition and electrical-idle detection are separate mechanisms.
+
+```text
+rx_eios_detected
+```
+
+comes from protocol decoding, while:
+
+```text
+mac_rx_elecidle
+```
+
+originates from physical electrical-status information.
+
+### EIOS Does Not Physically Shut Down the Transmitter
+
+EIOS is transmitted as protocol information. The actual transmitter transition into Electrical Idle is controlled through `TxElecIdle`.
+
+### `TxElecIdle` Does Not Automatically Imply a PHY Low-Power State
+
+The transmitter can be electrically idle without the entire PHY having entered a power state such as P1.
+
+Electrical signaling state and PHY power state must therefore remain separate architectural concepts.
+
+## Complete Architectural Model
+
+For one PCIe endpoint, the relationship among the LTSSM, PIPE wrapper, transmitter, receiver, and Electrical Idle indications can be represented as:
+
+```text
+                         LTSSM
+                           |
+               +-----------+-----------+
+               |                       |
+               v                       |
+        mac_tx_elecidle                |
+               |                       |
+               v                       |
+          PIPE wrapper                 |
+               |                       |
+               v                       |
+          TxElecIdle                   |
+               |                       |
+               v                       |
+          Local PHY TX                 |
+               |                       |
+===============|====== PCIe Link ======|===============
+               |                       |
+          Local PHY RX                 |
+               |                       |
+               v                       |
+          RxElecIdle                   |
+               |                       |
+               v                       |
+        CDC synchronizer               |
+               |                       |
+               v                       |
+         optional filter               |
+               |                       |
+               v                       |
+       mac_rx_elecidle ----------------+
+```
+
+The transmit and receive directions remain independent throughout this model.
+
+The LTSSM uses transmit-side Electrical Idle control to determine what its own transmitter does, while receive-side Electrical Idle status provides physical information about what the opposite endpoint's transmitter is doing.
+
+## Summary
+
+PCIe PIPE Electrical Idle handling is built around a strict separation between local transmitter control and remote transmitter observation.
+
+`TxElecIdle` is a MAC-to-PHY command that causes the local transmitter to enter Electrical Idle. `RxElecIdle` is a PHY-to-MAC indication that reports an Electrical Idle condition detected on the incoming receive lane. Because PCIe is full-duplex, these signals refer to independent directions and may legitimately have different values at the same endpoint.
+
+Electrical Idle must also remain distinct from other PIPE concepts. `RxValid` describes the availability of valid receive data, receiver detection determines whether a receiver termination is present, `PowerDown` controls PHY operating state, and `PhyStatus` reports completion of applicable PHY operations.
+
+Protocol notification and physical Electrical Idle are similarly separated. EIOS is transmitted through the normal PCIe datapath to provide protocol context for an intentional Electrical Idle transition, while `TxElecIdle` commands the PHY to perform the corresponding electrical action.
+
+During `Recovery.Speed`, these mechanisms work together so that the link can stop old-rate transmission, establish the required Electrical Idle conditions, change PHY signaling rate, and resume Recovery at the new rate.
+
+A well-structured implementation therefore preserves four independent categories of information:
+
+```text
+Protocol intent
+    EIOS and LTSSM state
+
+Local transmitter control
+    TxElecIdle
+
+Incoming electrical condition
+    RxElecIdle
+
+PHY operating control and completion
+    PowerDown, Rate, PhyStatus
+```
+
+Maintaining these distinctions produces a cleaner PIPE wrapper, a more deterministic LTSSM implementation, and a more accurate representation of the boundary between PCIe protocol behavior and PHY electrical behavior.
