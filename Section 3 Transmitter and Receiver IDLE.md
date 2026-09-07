@@ -733,7 +733,54 @@ The LTSSM interprets these observations according to the current PCIe state.
 `Recovery.Speed` is an important example because the link intentionally stops old-rate signaling before changing signaling rate.
 
 For a simplified Gen1-to-Gen2 speed transition:
-
+```text
+          Current speed = Gen1
+                 |
+                 v
+        Recovery.RcvrLock
+                 |
+                 | TS1
+                 | speed_change = 1
+                 | advertise supported rates
+                 |
+                 v
+        Recovery.RcvrCfg
+                 |
+                 | TS2
+                 | speed_change = 1
+                 | confirm common supported rate
+                 |
+                 v
+        Recovery.Speed
+                 |
+                 | send EIOS
+                 | assert TxElecIdle
+                 | detect/infer RX Electrical Idle
+                 |
+                 v
+          change PHY Rate
+          Gen1 -> Gen2
+                 |
+                 v
+        Recovery.RcvrLock
+          at NEW Gen2 rate
+                 |
+                 | TS1
+                 | speed_change = 0
+                 |
+                 v
+        Recovery.RcvrCfg
+                 |
+                 | TS2
+                 | speed_change = 0
+                 |
+                 v
+          Recovery.Idle
+                 |
+                 v
+                L0
+             at Gen2
+```
 ```text
 Recovery.RcvrCfg
       |
