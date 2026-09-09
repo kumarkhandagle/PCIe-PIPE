@@ -44,6 +44,7 @@ Transition occurs
        +---- repeated bit -> reduced amplitude
        +---- repeated bit -> reduced amplitude
 ```
+<img width="816" height="456" alt="image" src="https://github.com/user-attachments/assets/ed9b9883-9664-46e2-abf9-9346a464ca1e" />
 
 The transition level remains at the full transmitted level, while succeeding identical bits are attenuated. This increases the relative prominence of transitions and helps compensate for high-frequency loss in the channel. 
 
