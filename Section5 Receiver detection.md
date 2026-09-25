@@ -1,4 +1,4 @@
-# PCIe PIPE Receiver Detection — Complete Reference Notes
+# PCIe PIPE Receiver Detection 
 
 ## 1. Introduction
 
